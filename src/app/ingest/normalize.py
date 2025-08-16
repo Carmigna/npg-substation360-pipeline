@@ -1,4 +1,3 @@
-# src/app/ingest/normalize.py
 from typing import Iterable, Iterator, Any
 from loguru import logger
 from sqlalchemy import text
@@ -6,8 +5,9 @@ import re
 
 from src.app.db.session import SessionLocal
 
-# ---------- helpers
-
+# -------------------------
+# DB helper
+# -------------------------
 def _upsert(sql: str, rows: list[dict]) -> int:
     if not rows:
         return 0
@@ -17,81 +17,117 @@ def _upsert(sql: str, rows: list[dict]) -> int:
         s.commit()
     return len(rows)
 
-def _as_list(obj: Any) -> list:
-    if obj is None:
-        return []
-    if isinstance(obj, list):
-        return obj
-    if isinstance(obj, dict):
-        # common wrappers
-        for k in ("items", "data", "results", "values", "series"):
-            v = obj.get(k)
-            if isinstance(v, list):
-                return v
-        return [obj]
-    return [obj]
-
-def _flatten_points(rows: Iterable[dict]) -> Iterator[dict]:
-    """
-    Yield point-level dicts. If a parent has instrumentId and a 'values' list,
-    propagate instrumentId down into each child value row.
-    """
-    for r in rows:
-        if not isinstance(r, dict):
-            continue
-        base_iid = r.get("instrumentId") or r.get("instrument_id") or r.get("id")
-        # Typical nesting: r = {instrumentId: ..., values: [ {...}, {...} ]}
-        for bucket_key in ("values", "data", "points", "rows"):
-            if bucket_key in r and isinstance(r[bucket_key], list):
-                for v in r[bucket_key]:
-                    if isinstance(v, dict):
-                        if base_iid is not None and "instrumentId" not in v:
-                            v = {"instrumentId": base_iid, **v}
-                        yield v
-                break
-        else:
-            # no nested array → treat r as a point row itself
-            yield r
-
+# -------------------------
+# Generic recursive flattener
+# -------------------------
 _TS_KEYS = (
     "timestamp", "timeUtc", "timestampUtc", "timeUTC", "ts", "time",
     "endTimeUtc", "startTimeUtc", "periodEndUtc", "periodStartUtc",
+    "dateTime", "datetime", "readingTimeUtc", "time_utc", "timestampUTC",
 )
-
-# flexible phase key mapping
-_PHASE_PATTERNS = {
-    "A": [r"(^|[_-])a($|[_-])", r"(^|[_-])l1($|[_-])", r"phase\s*a", r"voltage.*a", r"current.*a", r"\bva\b", r"\bia\b"],
-    "B": [r"(^|[_-])b($|[_-])", r"(^|[_-])l2($|[_-])", r"phase\s*b", r"voltage.*b", r"current.*b", r"\bvb\b", r"\bib\b"],
-    "C": [r"(^|[_-])c($|[_-])", r"(^|[_-])l3($|[_-])", r"phase\s*c", r"voltage.*c", r"current.*c", r"\bvc\b", r"\bic\b"],
-}
-_PHASE_REGEX = {ph: [re.compile(pat, re.I) for pat in pats] for ph, pats in _PHASE_PATTERNS.items()}
 
 def _detect_ts(d: dict) -> str | None:
     for k in _TS_KEYS:
         v = d.get(k)
-        if v:
+        if v not in (None, ""):
             return str(v)
     return None
 
+def _walk_points(obj: Any, iid: Any = None, unit: str | None = None, depth: int = 0) -> Iterator[dict]:
+    """
+    Recursively traverse obj. Yield any dict that looks like a time-series 'point':
+    i.e. it has a timestamp-ish key. Carry instrumentId/unit from parents.
+    """
+    if depth > 8:
+        return
+    if isinstance(obj, dict):
+        # inherit identifiers/units
+        iid2 = obj.get("instrumentId") or obj.get("instrument_id") or obj.get("id") or iid
+        unit2 = obj.get("unit") or obj.get("units") or unit
+
+        # if this dict itself has a timestamp, treat as a point
+        ts = _detect_ts(obj)
+        if ts is not None:
+            d = dict(obj)
+            if iid2 is not None and "instrumentId" not in d:
+                d["instrumentId"] = iid2
+            if unit2 and "unit" not in d:
+                d["unit"] = unit2
+            yield d
+
+        # continue walking deeper
+        for v in obj.values():
+            yield from _walk_points(v, iid2, unit2, depth + 1)
+
+    elif isinstance(obj, list):
+        for it in obj:
+            yield from _walk_points(it, iid, unit, depth + 1)
+
+# -------------------------
+# Phase detection
+# -------------------------
+# Broader patterns: catch l1/l2/l3 even when glued to other words (e.g. 'voltageL1')
+_PAT_L1 = re.compile(r'(?:^|[^a-z0-9])l1(?:[^a-z0-9]|$)|voltagel1|currentl1|^l1|l1$', re.I)
+_PAT_L2 = re.compile(r'(?:^|[^a-z0-9])l2(?:[^a-z0-9]|$)|voltagel2|currentl2|^l2|l2$', re.I)
+_PAT_L3 = re.compile(r'(?:^|[^a-z0-9])l3(?:[^a-z0-9]|$)|voltagel3|currentl3|^l3|l3$', re.I)
+_PAT_A  = re.compile(r'(^|[^a-z0-9])phase?\s*a([^a-z0-9]|$)|voltage.*a|current.*a|(^|[^a-z0-9])a([^a-z0-9]|$)', re.I)
+_PAT_B  = re.compile(r'(^|[^a-z0-9])phase?\s*b([^a-z0-9]|$)|voltage.*b|current.*b|(^|[^a-z0-9])b([^a-z0-9]|$)', re.I)
+_PAT_C  = re.compile(r'(^|[^a-z0-9])phase?\s*c([^a-z0-9]|$)|voltage.*c|current.*c|(^|[^a-z0-9])c([^a-z0-9]|$)', re.I)
+
+
+
+def _phase_from_subject(name: str) -> str | None:
+    s = str(name).strip().upper()
+    # Normalize common labels to A/B/C
+    if s in ("L1", "PHASE A", "A"): return "L1"
+    if s in ("L2", "PHASE B", "B"): return "L2"
+    if s in ("L3", "PHASE C", "C"): return "L3"
+    # If “TOTAL”, “3-PHASE”, etc. shows up, treat as TOTAL
+    if s in ("TOTAL", "3-PHASE", "3PH", "ALL"): return "TOTAL"
+    return None
+
+def _numeric_value(d: dict):
+    """Try vendor numeric fields in priority order."""
+    for k in ("numericData", "numericValue", "value", "mean", "avg", "average", "meanValue", "dataValue"):
+        v = d.get(k)
+        if v in (None, ""):
+            continue
+        try:
+            return float(v)
+        except Exception:
+            continue
+    return None
+
+
 def _phase_values(d: dict) -> list[tuple[str, float]]:
     """
-    Return list of (phase, value) detected in dict d.
-    Supports keys like a/b/c, l1/l2/l3, voltageA/currentA, etc.
-    Also supports ('phase', 'value') pairs.
+    Return [(phase, value), ...] from a point dict.
+    Priority:
+      1) subjectAssetName + numericX (your tenant's shape)
+      2) explicit ('phase', 'value'/'mean'...)
+      3) scan numeric keys for L1/L2/L3 or A/B/C (legacy shapes)
+      4) single numeric 'value' fallback -> TOTAL
     """
     out: list[tuple[str, float]] = []
 
-    # 1) explicit 'phase' + 'value'
-    ph = d.get("phase") or d.get("Phase") or d.get("PHASE")
-    if ph and ("value" in d or "mean" in d or "avg" in d or "average" in d or "meanValue" in d):
-        val = d.get("value", d.get("mean", d.get("avg", d.get("average", d.get("meanValue")))))
-        try:
-            out.append((str(ph).strip().upper().replace("L", ""), float(val)))
+    # 1) subjectAssetName + numericData
+    subj = d.get("subjectAssetName") or d.get("subjectPhaseName") or d.get("channelName")
+    if subj:
+        ph = _phase_from_subject(subj)
+        val = _numeric_value(d)
+        if ph and val is not None:
+            out.append((ph, val))
             return out
-        except Exception:
-            pass
 
-    # 2) scan keys heuristically
+    # 2) explicit phase + value/mean/avg
+    ph = d.get("phase") or d.get("Phase") or d.get("PHASE")
+    if ph:
+        val = _numeric_value(d)
+        if val is not None:
+            out.append((str(ph).strip().upper().replace("L", ""), val))
+            return out
+
+    # 3) scan numeric keys for matches (l1/l2/l3 or a/b/c embedded in key names)
     for key, raw in d.items():
         if raw is None:
             continue
@@ -99,28 +135,26 @@ def _phase_values(d: dict) -> list[tuple[str, float]]:
             f = float(raw)
         except Exception:
             continue
-        k = str(key)
-        k_norm = k.lower()
+        k = str(key).lower()
+        if _PAT_L1.search(k) or _PAT_A.search(k):
+            out.append(("A", f)); continue
+        if _PAT_L2.search(k) or _PAT_B.search(k):
+            out.append(("B", f)); continue
+        if _PAT_L3.search(k) or _PAT_C.search(k):
+            out.append(("C", f)); continue
 
-        for ph, regs in _PHASE_REGEX.items():
-            if any(r.search(k) for r in regs):
-                out.append((ph, f))
-                break
-
-    # 3) fallback: single numeric 'value' → TOTAL
-    if not out and any(k in d for k in ("value", "mean", "avg", "average", "meanValue")):
-        val = d.get("value", d.get("mean", d.get("avg", d.get("average", d.get("meanValue")))))
-        try:
-            out.append(("TOTAL", float(val)))
-        except Exception:
-            pass
+    # 4) single numeric 'value' fallback -> TOTAL
+    v = _numeric_value(d)
+    if not out and v is not None:
+        out.append(("TOTAL", v))
 
     return out
 
-# ---------- normalizers
-
+# -------------------------
+# Normalizers
+# -------------------------
 def normalize_voltage_mean_30min(rows: Iterable[dict]) -> int:
-    points = list(_flatten_points(rows))
+    points = list(_walk_points(rows))
     mapped: list[dict] = []
     skipped = 0
 
@@ -157,7 +191,7 @@ def normalize_voltage_mean_30min(rows: Iterable[dict]) -> int:
     return n
 
 def normalize_current_mean_30min(rows: Iterable[dict]) -> int:
-    points = list(_flatten_points(rows))
+    points = list(_walk_points(rows))
     mapped: list[dict] = []
     skipped = 0
 
