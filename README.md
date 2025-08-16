@@ -1,25 +1,26 @@
 # NPG Substation360 Pipeline Demo
 
-**Goal:** Stand up a small, production‑shaped data pipeline that authenticates to EA Technology’s **Substation360 Integration API**, discovers **Instruments**, fetches **30‑minute captured telemetry** (e.g., voltage/current mean), lands raw payloads into Postgres (bronze), and normalizes into query‑ready tables (silver). This repo is designed for **VS Code** (local) and **GitHub Codespaces** (zero‑install) workflows.
+**Goal:** Stand up a production‑shaped data pipeline that authenticates to EA Technology’s **Substation360 Integration API**, discovers **Instruments**, fetches **30‑minute telemetry** (e.g., Voltage/Current mean), lands raw payloads into Postgres (**bronze**), and normalizes into query‑ready tables (**silver**). The repo supports **VS Code (local)** and **GitHub Codespaces (zero‑install)**.
 
-> ℹ️ **Granularity:** The Integration API exposes *30‑minute capture* for core telemetry. Examples include *Voltage min/mean/max*, *Current mean*, *Power (active/reactive) arithmetic mean*, *THD*, and *Transformer temperature*. Second‑level or 10‑minute endpoints are **not** in this Integration API. See “Available APIs” in the manual.
+> **Granularity:** The Integration API exposes **30‑minute capture** for core telemetry (e.g., voltage/current mean). Endpoints are called as **HTTP GET** with `from`/`to` query parameters and a **JSON body of instrument IDs**—an unusual but documented pattern we mirror exactly.&#x20;
 
 ---
 
-## Table of contents
+## Table of Contents
 
 * [Architecture](#architecture)
-* [Repo structure](#repo-structure)
+* [Repo Structure](#repo-structure)
 * [Prerequisites](#prerequisites)
 * [Quickstart (VS Code)](#quickstart-vs-code)
 * [Quickstart (Codespaces)](#quickstart-codespaces)
 * [Configuration (.env)](#configuration-env)
 * [TLS / Certificates](#tls--certificates)
 * [Database](#database)
-* [Runbook](#runbook)
-* [API surface (FastAPI)](#api-surface-fastapi)
+* [Runbook: End-to-End Demo](#runbook-end-to-end-demo)
+* [API Surface (FastAPI)](#api-surface-fastapi)
+* [Cloud Sink (Optional Replication)](#cloud-sink-optional-replication)
 * [Troubleshooting](#troubleshooting)
-* [Security notes](#security-notes)
+* [Security Notes](#security-notes)
 * [Roadmap](#roadmap)
 * [References](#references)
 * [License](#license)
@@ -31,39 +32,46 @@
 **Data flow**
 
 1. **Auth** → `POST /api/token` (Substation360 Auth).
-2. **Discover** → `GET /api/instrument` (list VisNet instruments you can access).
-3. **Ingest** → e.g. `GET /api/voltage/mean/30min?from=...&to=...` with **JSON body = \[instrumentIds]**.
-4. **Land raw** → store exact JSON rows in `raw_measurement` (bronze).
-5. **Normalize** → extract canonical fields into `voltage_mean_30m`, `current_mean_30m` (silver).
-6. **Serve** → views for analytics/ML feature extraction.
+2. **Discover** → `GET /api/instrument` (list instruments you can access).
+3. **Ingest** → e.g. `GET /api/voltage/mean/30min?from=...&to=...` with **JSON body = \[instrumentIds]**.&#x20;
+4. **Land (bronze)** → store exact JSON rows in `raw_measurement`.
+5. **Normalize (silver)** → extract canonical fields into `voltage_mean_30m`, `current_mean_30m`.
+6. **(Optional) Replicate** → push silver tables to a **cloud Postgres** (RDS/Azure/etc.) for analytics/ML feature pipelines.
 
-> The manual and Postman collection show the **Auth** endpoint and the **Instruments** + telemetry endpoints, including the unusual **GET with JSON body** pattern and the typical **30‑day look‑back** for `from`.
+> The Postman collection shows **multipart/form‑data** auth and the **GET + JSON body** telemetry calls we implement 1:1.&#x20;
 
 ---
 
-## Repo structure
+## Repo Structure
 
 ```
 npg-substation360-pipeline/
 ├─ .devcontainer/
-│  ├─ devcontainer.json          # Dev Container for VS Code/Codespaces
-│  └─ docker-compose.yml         # Postgres service
+│  ├─ devcontainer.json             # Dev Container for VS Code/Codespaces
+│  └─ docker-compose.yml            # Postgres service (ports 5432:5432)
+├─ certs/                           # place vendor CA file here (see TLS)
 ├─ src/
-│  ├─ app/
-│  │  ├─ main.py                 # FastAPI app (health & ingest handlers)
-│  │  ├─ config.py               # Settings (.env via pydantic-settings)
-│  │  ├─ clients/substation360.py# HTTP client (auth, list instruments, pulls)
-│  │  ├─ db/session.py           # SQLAlchemy engine/session
-│  │  ├─ db/models.py            # ORM models (Instrument, RawMeasurement)
-│  │  ├─ ingest/run_ingest.py    # CLI: auth/instruments/ingest demos
-│  │  └─ ingest/normalize.py     # Bronze → Silver normalization
-├─ tests/                        # (optional) pytest
+│  └─ app/
+│     ├─ main.py                    # FastAPI app (health, ingest, metrics, cloud)
+│     ├─ config.py                  # Settings (pydantic-settings reads .env)
+│     ├─ clients/
+│     │  └─ substation360.py        # HTTP client (auth, list, voltage/current)
+│     ├─ db/
+│     │  ├─ models.py               # ORM (Instrument, RawMeasurement, silver)
+│     │  └─ session.py              # SQLAlchemy engines/sessions (local + cloud)
+│     ├─ ingest/
+│     │  ├─ normalize.py            # Bronze → Silver normalization (robust)
+│     │  └─ run_ingest.py           # (optional) CLI helpers
+│     └─ sync/
+│        └─ cloud.py                # Optional cloud replication module
 ├─ docs/
 │  ├─ Substation360 API Integration - Customer Instructions.pdf
 │  └─ Integration APIs.postman_collection.json
-├─ requirements.txt
-├─ Makefile
+├─ tests/                           # (optional) pytest
 ├─ .env.template
+├─ .gitignore
+├─ Makefile                         # common tasks (run, db-init)
+├─ requirements.txt
 └─ README.md
 ```
 
@@ -71,201 +79,370 @@ npg-substation360-pipeline/
 
 ## Prerequisites
 
-* **VS Code** and **Docker Desktop** (for Dev Containers), or **GitHub Codespaces**.
+* **VS Code** (recommended) or **GitHub Codespaces**
+* **Docker** (for local Postgres via Dev Container compose; optional)
 * **Python 3.11+**
-* **Git** and a GitHub repo (private or public).
+* **Git**
+* **Substation360 credentials** (username/password)
+* **Vendor CA certificate** for TLS (see [TLS / Certificates](#tls--certificates))
 
 ---
 
 ## Quickstart (VS Code)
 
-1. **Clone and open**
+> You can run **without Docker** (using a local Postgres) or with the included **Dev Container** Postgres. Both paths are shown.
+
+### 0) Clone
 
 ```bash
-git clone https://github.com/carmigna/npg-substation360-pipeline.git
+git clone https://github.com/<your-org>/npg-substation360-pipeline.git
 cd npg-substation360-pipeline
 ```
 
-2. **Create your env file**
+### 1) Configure environment
 
 ```bash
 cp .env.template .env
-# then edit .env (see .env section below)
+# open .env and set:
+#   S360_USERNAME, S360_PASSWORD
+#   S360_CA_CERT_PATH=certs/substation360ig.co.uk.fullchain.complete.crt
+#   (optional) ENABLE_CLOUD_SINK + CLOUD_DB_URL
 ```
 
-3. **(Optional) Reopen in Dev Container**
-   VS Code → Command Palette → *Dev Containers: Reopen in Container*.
-   This spins up Python & Postgres per `.devcontainer/docker-compose.yml`.
+> **Never commit** your `.env`. It’s in `.gitignore`.
 
-4. **Install & init DB**
+### 2A) (Option A) Use local Postgres (already running on your machine)
+
+* Ensure a Postgres is reachable at `DATABASE_URL` (default is `postgresql+psycopg://app:app@localhost:5432/s360`).
+* Create DB `s360` if not present:
+
+  ```bash
+  psql "host=localhost user=app password=app dbname=postgres" -c "CREATE DATABASE s360;"
+  ```
+
+### 2B) (Option B) Start Postgres with Docker Compose (from the repo)
 
 ```bash
+docker compose -f .devcontainer/docker-compose.yml up -d db
+# Verify it's up:
+docker ps --format "table {{.Names}}\t{{.Ports}}\t{{.Status}}"
+```
+
+> If you see docker socket permission errors:
+> `sudo usermod -aG docker $USER && newgrp docker` (then open a new terminal).
+
+### 3) Python deps + DB init
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+
+# Create tables (Instrument / RawMeasurement / silver tables)
 make db-init
 ```
 
-5. **Run the app**
+### 4) Run the API
 
 ```bash
 make run
-# Health check
-curl -s localhost:8000/healthz
+# In another terminal:
+curl -s http://127.0.0.1:8000/healthz
+# → {"status":"ok"}
 ```
 
-**Expected:** `{"status":"ok"}`
+Open the **Swagger UI** at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 
 ---
 
 ## Quickstart (Codespaces)
 
-* GitHub → your repo → **Code** → **Codespaces** → **Create codespace**.
-* In the Codespace terminal:
+1. GitHub → your repo → **Code** → **Codespaces** → **Create codespace**
+2. In the Codespace terminal:
 
-  ```bash
-  cp .env.template .env
-  # set S360_USERNAME/S360_PASSWORD in .env
-  make setup
-  make db-init
-  make run
-  ```
+```bash
+cp .env.template .env
+# edit .env (username/password/cert path)
+pip install -r requirements.txt
+make db-init
+make run
+```
+
+Open Ports → expose `8000` → click to open the FastAPI docs.
 
 ---
 
 ## Configuration (.env)
 
 ```ini
-# Substation360 Integration API
+# -------- Local DB --------
+DATABASE_URL=postgresql+psycopg://app:app@localhost:5432/s360
+DB_ECHO=false
+
+# -------- Substation360 --------
 S360_AUTH_URL=https://auth.substation360ig.co.uk/api/token
 S360_BASE_URL=https://integration.substation360ig.co.uk/api
 S360_USERNAME=__set_me__
 S360_PASSWORD=__set_me__
-# TLS (see “TLS / Certificates” below)
-S360_VERIFY_SSL=true
-S360_CA_CERT_PATH=
 
-# Database (local dev example)
-DATABASE_URL=postgresql+psycopg://app:app@localhost:5432/s360
+# TLS (see "TLS / Certificates")
+S360_VERIFY_SSL=true
+S360_CA_CERT_PATH=certs/substation360ig.co.uk.fullchain.complete.crt
+# DEV ONLY: if SAN/hostname issues persist while vendor updates certs:
+S360_TLS_RELAX_HOSTNAME=true
+
+# -------- Optional Cloud Sink --------
+ENABLE_CLOUD_SINK=false
+# Example when enabled (local stand‑in for RDS/Azure):
+# CLOUD_DB_URL=postgresql+psycopg://app:app@localhost:5432/s360_cloud
+CLOUD_DB_ECHO=false
 ```
 
-* **S360\_AUTH\_URL / S360\_BASE\_URL** — fixed per the Integration API.
-* **S360\_USERNAME / S360\_PASSWORD** — Substation360 credentials (obtained from EA Technology). The manual shows the **token grant** flow used to acquire the bearer token.
-* **S360\_VERIFY\_SSL / S360\_CA\_CERT\_PATH** — see [TLS / Certificates](#tls--certificates).
+> **Auth pattern**: The Postman collection shows `POST /api/token` with **multipart/form‑data** (`grant_type=password`, `clienttype=user`, `username`, `password`). We implement the same and reuse the **Bearer token** on telemetry endpoints.&#x20;
 
 ---
 
 ## TLS / Certificates
 
-The Integration API uses **EA Technology self‑signed certificates**. For local tools you can either:
+EA Technology provides a **self‑signed chain**. You have three options:
 
-* **Import the EA root CA** into your machine’s **Trusted Root Certification Authorities**, or
-* Temporarily **disable SSL verification** in tooling while testing (not for production).
+1. **Preferred** (even for dev): point `S360_CA_CERT_PATH` to the vendor’s **full chain** file and keep `S360_VERIFY_SSL=true`.
+2. **If hostname/SAN mismatch during vendor transition**: set `S360_TLS_RELAX_HOSTNAME=true` **only in local dev** to skip hostname checks.
+3. **Last resort for initial connectivity**: `S360_VERIFY_SSL=false` (dev only; never in shared environments).
 
-The manual includes step‑by‑step import screenshots and notes on Postman’s “Disable SSL verification” toggle. This repo supports both: set `S360_CA_CERT_PATH` to the CA file, or set `S360_VERIFY_SSL=false` during initial connectivity tests.
+**Where to place the file**: put the provided file (e.g., `substation360ig.co.uk.fullchain.complete.crt`) into `./certs/` and reference it via `S360_CA_CERT_PATH`.
 
 ---
 
 ## Database
 
-* **Bronze**: `raw_measurement` stores the **exact JSON** returned by Substation360 per endpoint.
-* **Silver**: canonical tables (e.g., `voltage_mean_30m`, `current_mean_30m`) with:
+We use SQLAlchemy models with a bronze/silver split:
 
-  * `instrument_id`, `ts_utc`, `phase` (A/B/C/TOTAL), `value`, `unit`
-  * **PK** on `(instrument_id, ts_utc, phase)` for idempotent upserts.
+* **`instrument`**
+  `id BIGINT PRIMARY KEY`, `name TEXT`, `commissioned BOOLEAN`, `meta JSONB`
+  (If you created the DB before `meta` existed, add it:
+  `ALTER TABLE instrument ADD COLUMN IF NOT EXISTS meta JSONB;`)
 
-> You can request data with `from` up to **30 days ago**, passing *Instrument IDs* in a **JSON array body** and specifying `from`/`to` in the query string. The manual demonstrates this pattern and shows *Instruments* being called first to discover IDs.
+* **`raw_measurement`** (bronze)
+  `id SERIAL PK`, `endpoint TEXT`, `instrument_id BIGINT`, `payload JSONB`, `created_at TIMESTAMPTZ DEFAULT now()`
 
----
+* **Silver tables** (query‑ready)
 
-## Runbook
+  * `voltage_mean_30m(instrument_id, ts_utc, phase, value, unit)`
+  * `current_mean_30m(instrument_id, ts_utc, phase, value, unit)`
+    with **unique indexes** for idempotent upsert:
 
-### 1) Smoke test auth
+  ```sql
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_voltage_mean_30m  ON voltage_mean_30m (instrument_id, ts_utc, phase);
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_current_mean_30m  ON current_mean_30m (instrument_id, ts_utc, phase);
+  ```
 
-```bash
-make auth-smoke
-```
+**Normalization details:** payloads can be **nested** and vary by tenant. Our normalizer flattens common shapes and specifically maps:
 
-* Calls `POST /api/token` with `grant_type=password`, `clienttype=user`, `username`, `password`.
-* **Pass:** “Auth OK (token acquired)”. (See Postman “01 - Auth API”.)&#x20;
-
-### 2) Discover instruments + persist metadata
-
-```bash
-make instruments-smoke
-```
-
-* Calls `GET /api/instrument` with Bearer token; upserts to `instrument` table. (Postman “02 - Instruments”.)&#x20;
-
-### 3) (Optional) Ingest a small demo window
-
-```bash
-# Example: voltage mean, last 2 hours, first 3 instruments
-python -m src.app.ingest.run_ingest voltage_mean_30min --hours 2 --limit 3
-```
-
-* Calls `GET /api/voltage/mean/30min?from=...&to=...` with **JSON body = \[instrumentId, ...]**.
-* Lands raw rows → normalizes into `voltage_mean_30m`. (See Postman request and manual screenshots.)
+* **`subjectAssetName`** ∈ {`L1`,`L2`,`L3`} → **phase** {A,B,C} (or configurable to `{L1,L2,L3}`)
+* **`numericData`** (or related numeric fields) → **value**
+* **`time`/`timestamp*`** → **ts\_utc**
+  
 
 ---
 
-## API surface (FastAPI)
+## Runbook: End‑to‑End Demo
 
-When `make run` is active:
+> You can run these either via **Swagger** ([http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)) or **curl**.
 
-* `GET /healthz` — liveness probe.
-* *(If included in your branch)* `POST /ingest/voltage-mean-30m?hours=2&limit=3` — fetch, land, normalize (demo).
+### 1) Health
+
+```bash
+curl -s http://127.0.0.1:8000/healthz
+# {"status":"ok"}
+```
+
+### 2) Ingest Instruments
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/ingest/instruments | jq .
+# {"received": N, "upserted": N}
+```
+
+Check in DB:
+
+```bash
+psql "host=localhost port=5432 dbname=s360 user=app password=app" \
+  -c "select id,name,commissioned from instrument order by id limit 10;"
+```
+
+### 3) Ingest Voltage / Current (last 2 hours, up to 3 instruments)
+
+```bash
+curl -s -X POST "http://127.0.0.1:8000/ingest/voltage-mean-30m?hours=2&limit=3" | jq .
+# {"instrument_ids":[...], "fetched": X, "normalized": Y}
+
+curl -s -X POST "http://127.0.0.1:8000/ingest/current-mean-30m?hours=2&limit=3" | jq .
+# {"instrument_ids":[...], "fetched": X, "normalized": Y}
+```
+
+**Verify silver tables:**
+
+```bash
+psql "host=localhost port=5432 dbname=s360 user=app password=app" \
+  -c "select count(*) from voltage_mean_30m; \
+      select count(*) from current_mean_30m; \
+      select * from voltage_mean_30m order by ts_utc desc limit 5;"
+```
+
+### 4) Summary metrics
+
+```bash
+curl -s "http://127.0.0.1:8000/metrics/ingest-summary?hours=24" | jq .
+# {"since_hours":24,"tables":[{"table":"voltage_mean_30m","rows":...},{"table":"current_mean_30m","rows":...}]}
+```
+
+---
+
+## API Surface (FastAPI)
+
+* `GET /healthz` — liveness
+* `POST /ingest/instruments` — fetch + upsert instruments
+* `POST /ingest/voltage-mean-30m?hours=&limit=` — fetch, land (bronze), normalize (silver)
+* `POST /ingest/current-mean-30m?hours=&limit=` — same for current
+* `GET /metrics/ingest-summary?hours=` — row counts in last N hours
+
+**Cloud sink (optional):**
+
+* `GET /cloud/healthz` — verifies cloud DB connectivity
+* `POST /cloud/init` — creates cloud tables/indexes (idempotent)
+* `POST /cloud/sync?tables=instrument,voltage_mean_30m,current_mean_30m&since_hours=24` — replicate recent rows
+
+Open the interactive docs at **`/docs`** and try these endpoints in order.
+
+---
+
+## Cloud Sink (Optional Replication)
+
+You can replicate `instrument`, `voltage_mean_30m`, and `current_mean_30m` to a **second database** (e.g., cloud Postgres). It’s off by default.
+
+### 1) Enable in `.env`
+
+```ini
+ENABLE_CLOUD_SINK=true
+CLOUD_DB_URL=postgresql+psycopg://app:app@localhost:5432/s360_cloud
+```
+
+Create the target DB (for the demo):
+
+```bash
+psql "host=localhost port=5432 dbname=postgres user=app password=app" \
+  -c "CREATE DATABASE s360_cloud;"
+```
+
+### 2) Provision cloud schema
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/cloud/init | jq .
+# {"ok": true}
+```
+
+### 3) Sync recent data
+
+```bash
+curl -s -X POST \
+  "http://127.0.0.1:8000/cloud/sync?tables=instrument,voltage_mean_30m,current_mean_30m&since_hours=24" \
+  | jq .
+# {"tables":[...],"since_hours":24,"copied_rows":{"instrument":N,"voltage_mean_30m":X,"current_mean_30m":Y}}
+```
+
+### 4) Verify in cloud DB
+
+```bash
+psql "host=localhost port=5432 dbname=s360_cloud user=app password=app" \
+  -c "select count(*) from instrument; \
+      select count(*) from voltage_mean_30m; \
+      select count(*) from current_mean_30m;"
+```
+
+> The sync path is idempotent and hardens for schema drift (e.g., it will **add `instrument.meta`** to the target if missing and selects `NULL::jsonb AS meta` from the source if absent).
 
 ---
 
 ## Troubleshooting
 
-* **SSL / certificate errors**
-  Import the EA root CA into **Trusted Root Certification Authorities** (Windows wizard shown in manual), or set `S360_VERIFY_SSL=false` temporarily.&#x20;
+**SSL: `CERTIFICATE_VERIFY_FAILED` (self‑signed / chain)**
 
-* **401/403 after auth**
-  Ensure you are passing the **Bearer** token returned from `/api/token`. In Postman, the manual shows setting an **environment variable `token`** from the auth response and reusing it in subsequent calls.
+* Ensure `S360_CA_CERT_PATH` points to the provided CA file and `S360_VERIFY_SSL=true`.
+* For dev only, if you hit **hostname/SAN mismatch** while EA updates certs, set `S360_TLS_RELAX_HOSTNAME=true` to ignore host checks.
 
-* **No data returned**
-  Verify your **access level** (Basic/Enhanced/Premium) grants you the requested endpoints, and keep your `from` within the **30‑day window**. See *Available APIs* and *Access Levels*.&#x20;
+**Auth succeeds, telemetry returns nothing**
 
-* **GET with body?**
-  Yes—per Integration API examples, telemetry endpoints accept **instrument IDs in the JSON body** and `from`/`to` as query params. Match the Postman collection exactly.
+* Make sure you are calling telemetry endpoints with **GET + JSON body** of instrument IDs and `from`/`to` in the query. This is how the Integration API is designed (per Postman).&#x20;
+
+**Fetched > 0 but Normalized = 0**
+
+* Your tenant likely returns per‑phase rows like:
+
+  ```json
+  {"time":"...Z","subjectAssetName":"L3","numericData":243.131,"instrumentId":...}
+  ```
+
+  Our normalizer maps `subjectAssetName` → A/B/C (or L1/L2/L3) and `numericData` → value. If still zero, inspect a bronze row:
+
+  ```bash
+  psql "host=localhost port=5432 dbname=s360 user=app password=app" \
+    -c "select jsonb_pretty(payload) from raw_measurement order by id desc limit 1;"
+  ```
+
+  Share the keys you see (we can add a one‑liner mapper).
+
+**`UndefinedColumn: column "meta" does not exist` during /cloud/sync**
+
+* Add the column in source/target (idempotent):
+
+  ```bash
+  psql "... s360 ..."       -c "ALTER TABLE instrument ADD COLUMN IF NOT EXISTS meta JSONB;"
+  psql "... s360_cloud ..." -c "ALTER TABLE instrument ADD COLUMN IF NOT EXISTS meta JSONB;"
+  ```
+
+  (The sync path now also auto‑adapts.)
+
+**Docker: permission denied to docker.sock**
+
+* Linux: `sudo usermod -aG docker $USER && newgrp docker` and re‑try `docker compose ...`.
+
+**Python (PEP 668) “externally‑managed‑environment”**
+
+* Use a **virtualenv**: `python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt`
 
 ---
 
-## Security notes
+## Security Notes
 
-* **Never commit** real secrets. Use `.env` locally; keep `.env` out of Git.
-* Prefer **trusted CA import** over disabling SSL in production.&#x20;
-* Scope API credentials to only required access (Basic/Enhanced/Premium per your contract).&#x20;
+* Keep `.env` **out of Git**; rotate credentials if they leak.
+* Use **trusted CA** verification in any shared/staging/prod environment. The `S360_TLS_RELAX_HOSTNAME` switch is **dev‑only**.
+* Scope Substation360 access (Basic/Enhanced/Premium) to the least privilege needed.
 
 ---
 
 ## Roadmap
 
-* Add additional endpoints: **power/active/mean/30min**, **power/reactive/mean/30min**, **THD**, **transformer temperature** (all 30‑minute capture).&#x20;
-* Idempotent **backfill** tooling with gap detection.
-* **Views** for ML feature extraction and export to Parquet.
-* **Scheduler** (cron/K8s) + observability (metrics/logging) for productionization.
+* Add more telemetry endpoints: Active/Reactive/ Apparent Power means, Voltage min/max, THD, Transformer temperature (30‑minute capture).
+* Idempotent **backfill** tooling + gap detection.
+* Views for ML feature extraction; export to Parquet.
+* CI/CD + scheduled jobs + observability (metrics/logs).
 
 ---
 
 ## References
 
-* **Manual:** *Substation360 API Integration — Customer Instructions* (Auth flow, TLS, Postman usage, 30‑minute capture, Swagger).
-* **Postman collection:** *Integration APIs.postman\_collection.json* (Auth token endpoint, Instruments endpoint, example telemetry calls).
+* **Postman collection** (Auth, Instruments, telemetry GET with JSON body): *Integration APIs.postman\_collection.json*.&#x20;
+* **Customer PDF** (auth flow, TLS notes, examples): *Substation360 API Integration – Customer Instructions* (see `/docs`).
 
 ---
 
 ## License
 
-choose one for your repo.
+Choose a license (e.g., Apache‑2.0 or MIT) and update this section.
 
 ---
 
-### Badges (optional)
+### Tip for reviewers
 
-Add CI badges here once you wire up GitHub Actions.
-
----
-
-**Tip for reviewers:** Start at **Runbook → 1) Auth**, then **2) Instruments**, then trigger a **small ingest** and query `voltage_mean_30m` to verify end‑to‑end. The **30‑minute** cadence is by design per the Integration API.&#x20;
+Open **`/docs`**, run **`POST /ingest/instruments`**, then **`POST /ingest/voltage-mean-30m`** and **`/ingest/current-mean-30m`**, then **`GET /metrics/ingest-summary`**. If the vendor certs are still in flux, use the provided CA file and `S360_TLS_RELAX_HOSTNAME=true` *for local dev only*.
