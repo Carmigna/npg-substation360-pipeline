@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     S360_PASSWORD: SecretStr
     S360_VERIFY_SSL: bool = True
     S360_CA_CERT_PATH: str | None = None
+    S360_TLS_RELAX_HOSTNAME: bool = False
     DATABASE_URL: str
 
     class Config:

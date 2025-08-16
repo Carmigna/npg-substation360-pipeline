@@ -1,17 +1,13 @@
-version: "3.9"
 services:
-  dev:
-    image: mcr.microsoft.com/devcontainers/base:bookworm
-    volumes: [ "..:/workspace:cached" ]
-    command: sleep infinity
-    depends_on: [ db ]
   db:
     image: postgres:15
+    container_name: s360-db          # <— add this line
     environment:
       POSTGRES_USER: app
       POSTGRES_PASSWORD: app
       POSTGRES_DB: s360
-    ports: [ "5432:5432" ]
+    ports:
+      - "5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U app -d s360"]
       interval: 5s
