@@ -3,6 +3,8 @@ from loguru import logger
 from sqlalchemy import text
 import datetime as dt
 from datetime import UTC
+from src.app.sync.cloud import cloud_health, cloud_init, sync as cloud_sync
+from src.app.config import settings
 
 from src.app.clients.substation360 import (
     get_token, list_instruments,
@@ -175,3 +177,19 @@ def ingest_summary(hours: int = 24):
         result = s.execute(q, {"h": hours})
         rows = [dict(m) for m in result.mappings()]  # SQLAlchemy 2.x safe conversion
     return {"since_hours": hours, "tables": rows}
+
+@app.get("/cloud/healthz", summary="Cloud sink connectivity")
+def cloud_healthz():
+    ok, msg = cloud_health()
+    return {"enabled": settings.ENABLE_CLOUD_SINK, "ok": ok, "status": msg}
+
+@app.post("/cloud/init", summary="Create tables/indexes on cloud target")
+def cloud_init_route():
+    cloud_init()
+    return {"ok": True}
+
+@app.post("/cloud/sync", summary="Replicate recent rows to cloud target")
+def cloud_sync_route(tables: str = "instrument,voltage_mean_30m,current_mean_30m", since_hours: int = 24):
+    tlist = [t.strip() for t in tables.split(",") if t.strip()]
+    res = cloud_sync(tlist, since_hours=since_hours)
+    return {"tables": tlist, "since_hours": since_hours, "copied_rows": res}
