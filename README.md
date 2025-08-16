@@ -1,4 +1,3 @@
-# npg-substation360-pipeline
 # NPG Substation360 Pipeline Demo
 
 **Goal:** Stand up a small, production‑shaped data pipeline that authenticates to EA Technology’s **Substation360 Integration API**, discovers **Instruments**, fetches **30‑minute captured telemetry** (e.g., voltage/current mean), lands raw payloads into Postgres (bronze), and normalizes into query‑ready tables (silver). This repo is designed for **VS Code** (local) and **GitHub Codespaces** (zero‑install) workflows.
