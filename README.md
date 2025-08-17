@@ -380,7 +380,7 @@ psql "host=localhost port=5432 dbname=s360_cloud user=app password=app" \
 * Your tenant likely returns per‑phase rows like:
 
   ```json
-  {"time":"...Z","subjectAssetName":"L3","numericData":243.131,"instrumentId":...}
+  {"time":"...Z","subjectAssetName":"L3","numericData":243.131,"instrumentId":"..."}
   ```
 
   Our normalizer maps `subjectAssetName` → A/B/C (or L1/L2/L3) and `numericData` → value. If still zero, inspect a bronze row:
