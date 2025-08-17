@@ -439,8 +439,7 @@ psql "host=localhost port=5432 dbname=s360_cloud user=app password=app" \
 
 ## License
 
-Choose a license (e.g., Apache‑2.0 or MIT) and update this section.
-
+This project is licensed under the MIT License – see the [LICENSE](LICENSE) file for details.
 ---
 
 ### Tip for reviewers
