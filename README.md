@@ -95,7 +95,7 @@ npg-substation360-pipeline/
 ### 0) Clone
 
 ```bash
-git clone https://github.com/<your-org>/npg-substation360-pipeline.git
+git clone https://github.com/carmigna/npg-substation360-pipeline.git
 cd npg-substation360-pipeline
 ```
 
