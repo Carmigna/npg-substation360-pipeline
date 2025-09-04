@@ -33,9 +33,9 @@
 
 1. **Auth** → `POST /api/token` (Substation360 Auth).
 2. **Discover** → `GET /api/instrument` (list instruments you can access).
-3. **Ingest** → e.g. `GET /api/voltage/mean/30min?from=...&to=...` with **JSON body = \[instrumentIds]**.&#x20;
+3. **Ingest** → e.g. `GET /api/voltage/mean/10min?from=...&to=...` with **JSON body = \[instrumentIds]**.&#x20;
 4. **Land (bronze)** → store exact JSON rows in `raw_measurement`.
-5. **Normalize (silver)** → extract canonical fields into `voltage_mean_30m`, `current_mean_30m`.
+5. **Normalize (silver)** → extract canonical fields into `voltage_mean_10m`, `current_mean_10m`.
 6. **(Optional) Replicate** → push silver tables to a **cloud Postgres** (RDS/Azure/etc.) for analytics/ML feature pipelines.
 
 > The Postman collection shows **multipart/form‑data** auth and the **GET + JSON body** telemetry calls we implement 1:1.&#x20;
@@ -228,13 +228,13 @@ We use SQLAlchemy models with a bronze/silver split:
 
 * **Silver tables** (query‑ready)
 
-  * `voltage_mean_30m(instrument_id, ts_utc, phase, value, unit)`
-  * `current_mean_30m(instrument_id, ts_utc, phase, value, unit)`
+  * `voltage_mean_10m(instrument_id, ts_utc, phase, value, unit)`
+  * `current_mean_10m(instrument_id, ts_utc, phase, value, unit)`
     with **unique indexes** for idempotent upsert:
 
   ```sql
-  CREATE UNIQUE INDEX IF NOT EXISTS uq_voltage_mean_30m  ON voltage_mean_30m (instrument_id, ts_utc, phase);
-  CREATE UNIQUE INDEX IF NOT EXISTS uq_current_mean_30m  ON current_mean_30m (instrument_id, ts_utc, phase);
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_voltage_mean_10m  ON voltage_mean_10m (instrument_id, ts_utc, phase);
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_current_mean_10m  ON current_mean_10m (instrument_id, ts_utc, phase);
   ```
 
 **Normalization details:** payloads can be **nested** and vary by tenant. Our normalizer flattens common shapes and specifically maps:
@@ -274,10 +274,10 @@ psql "host=localhost port=5432 dbname=s360 user=app password=app" \
 ### 3) Ingest Voltage / Current (last 2 hours, up to 3 instruments)
 
 ```bash
-curl -s -X POST "http://127.0.0.1:8000/ingest/voltage-mean-30m?hours=2&limit=3" | jq .
+curl -s -X POST "http://127.0.0.1:8000/ingest/voltage-mean-10m?hours=2&limit=3" | jq .
 # {"instrument_ids":[...], "fetched": X, "normalized": Y}
 
-curl -s -X POST "http://127.0.0.1:8000/ingest/current-mean-30m?hours=2&limit=3" | jq .
+curl -s -X POST "http://127.0.0.1:8000/ingest/current-mean-10m?hours=2&limit=3" | jq .
 # {"instrument_ids":[...], "fetched": X, "normalized": Y}
 ```
 
@@ -285,16 +285,16 @@ curl -s -X POST "http://127.0.0.1:8000/ingest/current-mean-30m?hours=2&limit=3" 
 
 ```bash
 psql "host=localhost port=5432 dbname=s360 user=app password=app" \
-  -c "select count(*) from voltage_mean_30m; \
-      select count(*) from current_mean_30m; \
-      select * from voltage_mean_30m order by ts_utc desc limit 5;"
+  -c "select count(*) from voltage_mean_10m; \
+      select count(*) from current_mean_10m; \
+      select * from voltage_mean_10m order by ts_utc desc limit 5;"
 ```
 
 ### 4) Summary metrics
 
 ```bash
 curl -s "http://127.0.0.1:8000/metrics/ingest-summary?hours=24" | jq .
-# {"since_hours":24,"tables":[{"table":"voltage_mean_30m","rows":...},{"table":"current_mean_30m","rows":...}]}
+# {"since_hours":24,"tables":[{"table":"voltage_mean_10m","rows":...},{"table":"current_mean_10m","rows":...}]}
 ```
 
 ---
@@ -303,15 +303,15 @@ curl -s "http://127.0.0.1:8000/metrics/ingest-summary?hours=24" | jq .
 
 * `GET /healthz` — liveness
 * `POST /ingest/instruments` — fetch + upsert instruments
-* `POST /ingest/voltage-mean-30m?hours=&limit=` — fetch, land (bronze), normalize (silver)
-* `POST /ingest/current-mean-30m?hours=&limit=` — same for current
+* `POST /ingest/voltage-mean-10m?hours=&limit=` — fetch, land (bronze), normalize (silver)
+* `POST /ingest/current-mean-10m?hours=&limit=` — same for current
 * `GET /metrics/ingest-summary?hours=` — row counts in last N hours
 
 **Cloud sink (optional):**
 
 * `GET /cloud/healthz` — verifies cloud DB connectivity
 * `POST /cloud/init` — creates cloud tables/indexes (idempotent)
-* `POST /cloud/sync?tables=instrument,voltage_mean_30m,current_mean_30m&since_hours=24` — replicate recent rows
+* `POST /cloud/sync?tables=instrument,voltage_mean_10m,current_mean_10m&since_hours=24` — replicate recent rows
 
 Open the interactive docs at **`/docs`** and try these endpoints in order.
 
@@ -319,7 +319,7 @@ Open the interactive docs at **`/docs`** and try these endpoints in order.
 
 ## Cloud Sink (Optional Replication)
 
-You can replicate `instrument`, `voltage_mean_30m`, and `current_mean_30m` to a **second database** (e.g., cloud Postgres). It’s off by default.
+You can replicate `instrument`, `voltage_mean_10m`, and `current_mean_10m` to a **second database** (e.g., cloud Postgres). It’s off by default.
 
 ### 1) Enable in `.env`
 
@@ -346,9 +346,9 @@ curl -s -X POST http://127.0.0.1:8000/cloud/init | jq .
 
 ```bash
 curl -s -X POST \
-  "http://127.0.0.1:8000/cloud/sync?tables=instrument,voltage_mean_30m,current_mean_30m&since_hours=24" \
+  "http://127.0.0.1:8000/cloud/sync?tables=instrument,voltage_mean_10m,current_mean_10m&since_hours=24" \
   | jq .
-# {"tables":[...],"since_hours":24,"copied_rows":{"instrument":N,"voltage_mean_30m":X,"current_mean_30m":Y}}
+# {"tables":[...],"since_hours":24,"copied_rows":{"instrument":N,"voltage_mean_10m":X,"current_mean_10m":Y}}
 ```
 
 ### 4) Verify in cloud DB
@@ -356,8 +356,8 @@ curl -s -X POST \
 ```bash
 psql "host=localhost port=5432 dbname=s360_cloud user=app password=app" \
   -c "select count(*) from instrument; \
-      select count(*) from voltage_mean_30m; \
-      select count(*) from current_mean_30m;"
+      select count(*) from voltage_mean_10m; \
+      select count(*) from current_mean_10m;"
 ```
 
 > The sync path is idempotent and hardens for schema drift (e.g., it will **add `instrument.meta`** to the target if missing and selects `NULL::jsonb AS meta` from the source if absent).
@@ -445,4 +445,4 @@ This project is licensed under the MIT License – see the [LICENSE](LICENSE) fi
 
 ### Tip for reviewers
 
-Open **`/docs`**, run **`POST /ingest/instruments`**, then **`POST /ingest/voltage-mean-30m`** and **`/ingest/current-mean-30m`**, then **`GET /metrics/ingest-summary`**. If the vendor certs are still in flux, use the provided CA file and `S360_TLS_RELAX_HOSTNAME=true` *for local dev only*.
+Open **`/docs`**, run **`POST /ingest/instruments`**, then **`POST /ingest/voltage-mean-10m`** and **`/ingest/current-mean-10m`**, then **`GET /metrics/ingest-summary`**. If the vendor certs are still in flux, use the provided CA file and `S360_TLS_RELAX_HOSTNAME=true` *for local dev only*.
