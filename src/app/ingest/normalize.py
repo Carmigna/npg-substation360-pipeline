@@ -153,7 +153,7 @@ def _phase_values(d: dict) -> list[tuple[str, float]]:
 # -------------------------
 # Normalizers
 # -------------------------
-def normalize_voltage_mean_30min(rows: Iterable[dict]) -> int:
+def normalize_voltage_mean_10min(rows: Iterable[dict]) -> int:
     points = list(_walk_points(rows))
     mapped: list[dict] = []
     skipped = 0
@@ -178,10 +178,10 @@ def normalize_voltage_mean_30min(rows: Iterable[dict]) -> int:
             mapped.append({"i": iid, "t": ts, "p": ph, "v": val, "u": unit})
 
     if skipped:
-        logger.info(f"normalize_voltage_mean_30min: mapped={len(mapped)} skipped={skipped}")
+        logger.info(f"normalize_voltage_mean_10min: mapped={len(mapped)} skipped={skipped}")
 
     sql = """
-    INSERT INTO voltage_mean_30m (instrument_id, ts_utc, phase, value, unit)
+    INSERT INTO voltage_mean_10m (instrument_id, ts_utc, phase, value, unit)
     VALUES (:i, :t, :p, :v, :u)
     ON CONFLICT (instrument_id, ts_utc, phase)
     DO UPDATE SET value=EXCLUDED.value, unit=EXCLUDED.unit;
@@ -190,7 +190,7 @@ def normalize_voltage_mean_30min(rows: Iterable[dict]) -> int:
     logger.info(f"Normalized voltage rows inserted/updated: {n}")
     return n
 
-def normalize_current_mean_30min(rows: Iterable[dict]) -> int:
+def normalize_current_mean_10min(rows: Iterable[dict]) -> int:
     points = list(_walk_points(rows))
     mapped: list[dict] = []
     skipped = 0
@@ -215,10 +215,10 @@ def normalize_current_mean_30min(rows: Iterable[dict]) -> int:
             mapped.append({"i": iid, "t": ts, "p": ph, "v": val, "u": unit})
 
     if skipped:
-        logger.info(f"normalize_current_mean_30min: mapped={len(mapped)} skipped={skipped}")
+        logger.info(f"normalize_current_mean_10min: mapped={len(mapped)} skipped={skipped}")
 
     sql = """
-    INSERT INTO current_mean_30m (instrument_id, ts_utc, phase, value, unit)
+    INSERT INTO current_mean_10m (instrument_id, ts_utc, phase, value, unit)
     VALUES (:i, :t, :p, :v, :u)
     ON CONFLICT (instrument_id, ts_utc, phase)
     DO UPDATE SET value=EXCLUDED.value, unit=EXCLUDED.unit;

@@ -17,17 +17,16 @@ def cloud_health() -> tuple[bool, str]:
 def cloud_init() -> None:
     if not cloud_engine:
         raise RuntimeError("Cloud sink not configured")
-    # create tables on the cloud target
     Base.metadata.create_all(bind=cloud_engine)
-    # ensure unique indexes for upserts exist
     with cloud_engine.begin() as conn:
+        conn.execute(text("ALTER TABLE instrument ADD COLUMN IF NOT EXISTS meta JSONB;"))
         conn.execute(text("""
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_voltage_mean_30m
-            ON voltage_mean_30m (instrument_id, ts_utc, phase);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_voltage_mean_10m
+            ON voltage_mean_10m (instrument_id, ts_utc, phase);
         """))
         conn.execute(text("""
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_current_mean_30m
-            ON current_mean_30m (instrument_id, ts_utc, phase);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_current_mean_10m
+            ON current_mean_10m (instrument_id, ts_utc, phase);
         """))
 
 def _sync_one(table: str, since_hours: int) -> int:
@@ -35,35 +34,62 @@ def _sync_one(table: str, since_hours: int) -> int:
         raise RuntimeError("Cloud sink not configured")
 
     if table == "instrument":
-        sel = text("select id, name, commissioned, meta from instrument")
+        # detect whether source has 'meta' column
+        with SessionLocal() as src:
+            has_meta = src.execute(text("""
+                SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='instrument' AND column_name='meta'
+                ) AS ok
+            """)).scalar()
+
+        sel = text(
+            "SELECT id, name, commissioned, meta FROM instrument"
+            if has_meta else
+            "SELECT id, name, commissioned, NULL::jsonb AS meta FROM instrument"
+        )
+
         ins = text("""
             INSERT INTO instrument (id, name, commissioned, meta)
             VALUES (:id, :name, :commissioned, :meta)
-            ON CONFLICT (id) DO UPDATE SET
-              name=EXCLUDED.name,
-              commissioned=EXCLUDED.commissioned,
-              meta=EXCLUDED.meta;
+            ON CONFLICT (id) DO UPDATE
+            SET name=EXCLUDED.name,
+                commissioned=EXCLUDED.commissioned,
+                meta=EXCLUDED.meta;
         """)
-    elif table == "voltage_mean_30m":
+
+        # ensure target has 'meta'
+        with CloudSessionLocal() as dst:
+            dst.execute(text("ALTER TABLE instrument ADD COLUMN IF NOT EXISTS meta JSONB;"))
+            dst.commit()
+
+        with SessionLocal() as src, CloudSessionLocal() as dst:
+            rows = src.execute(sel).mappings().all()
+            if not rows:
+                return 0
+            dst.execute(ins, rows)
+            dst.commit()
+            return len(rows)
+    elif table == "voltage_mean_10m":
         sel = text("""
             select instrument_id, ts_utc, phase, value, unit
-            from voltage_mean_30m
+            from voltage_mean_10m
             where ts_utc >= now() - (:h || ' hours')::interval
         """)
         ins = text("""
-            INSERT INTO voltage_mean_30m (instrument_id, ts_utc, phase, value, unit)
+            INSERT INTO voltage_mean_10m (instrument_id, ts_utc, phase, value, unit)
             VALUES (:instrument_id, :ts_utc, :phase, :value, :unit)
             ON CONFLICT (instrument_id, ts_utc, phase) DO UPDATE
             SET value=EXCLUDED.value, unit=EXCLUDED.unit;
         """)
-    elif table == "current_mean_30m":
+    elif table == "current_mean_10m":
         sel = text("""
             select instrument_id, ts_utc, phase, value, unit
-            from current_mean_30m
+            from current_mean_10m
             where ts_utc >= now() - (:h || ' hours')::interval
         """)
         ins = text("""
-            INSERT INTO current_mean_30m (instrument_id, ts_utc, phase, value, unit)
+            INSERT INTO current_mean_10m (instrument_id, ts_utc, phase, value, unit)
             VALUES (:instrument_id, :ts_utc, :phase, :value, :unit)
             ON CONFLICT (instrument_id, ts_utc, phase) DO UPDATE
             SET value=EXCLUDED.value, unit=EXCLUDED.unit;

@@ -1,4 +1,5 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from loguru import logger
 from sqlalchemy import text
 import datetime as dt
@@ -8,12 +9,12 @@ from src.app.config import settings
 
 from src.app.clients.substation360 import (
     get_token, list_instruments,
-    voltage_mean_30min, current_mean_30min
+    voltage_mean_10min, current_mean_10min
 )
 from src.app.db.session import SessionLocal
 from src.app.db.models import Instrument as DBInstrument, RawMeasurement
 from src.app.ingest.normalize import (
-    normalize_voltage_mean_30min, normalize_current_mean_30min
+    normalize_voltage_mean_10min, normalize_current_mean_10min
 )
 
 app = FastAPI(title="NPG Substation360 Pipeline Demo", version="0.1.3")
@@ -95,8 +96,8 @@ def ingest_instruments():
 
     return {"received": len(instruments), "upserted": upserted}
 
-@app.post("/ingest/voltage-mean-30m", summary="Voltage mean (30m) bronze->silver")
-def ingest_voltage_mean_30m(hours: int = 2, limit: int = 3):
+@app.post("/ingest/voltage-mean-10m", summary="Voltage mean (10m) bronze->silver")
+def ingest_voltage_mean_10m(hours: int = 2, limit: int = 3):
     token = get_token()
     instruments = _as_list(list_instruments(token))
     # select up to `limit` ids
@@ -114,7 +115,14 @@ def ingest_voltage_mean_30m(hours: int = 2, limit: int = 3):
     to_ts = dt.datetime.now(UTC)
     from_ts = to_ts - dt.timedelta(hours=hours)
 
-    data = voltage_mean_30min(token, ids, from_ts, to_ts)
+    try:
+        data = voltage_mean_10min(token, ids, from_ts, to_ts)
+    except Exception as e:
+        # return JSON so curl | jq doesn't fail
+        return JSONResponse(
+            status_code=502,
+            content={"error": "upstream_voltage_fetch_failed", "detail": str(e)}
+        )
 
     # bronze
     with SessionLocal() as s:
@@ -127,11 +135,11 @@ def ingest_voltage_mean_30m(hours: int = 2, limit: int = 3):
         s.commit()
 
     # silver
-    n = normalize_voltage_mean_30min(data)
+    n = normalize_voltage_mean_10min(data)
     return {"instrument_ids": ids, "fetched": len(data), "normalized": n}
 
-@app.post("/ingest/current-mean-30m", summary="Current mean (30m) bronze->silver")
-def ingest_current_mean_30m(hours: int = 2, limit: int = 3):
+@app.post("/ingest/current-mean-10m", summary="Current mean (10m) bronze->silver")
+def ingest_current_mean_10m(hours: int = 2, limit: int = 3):
     token = get_token()
     instruments = _as_list(list_instruments(token))
 
@@ -149,7 +157,13 @@ def ingest_current_mean_30m(hours: int = 2, limit: int = 3):
     to_ts = dt.datetime.now(UTC)
     from_ts = to_ts - dt.timedelta(hours=hours)
 
-    data = current_mean_30min(token, ids, from_ts, to_ts)
+    try:
+        data = current_mean_10min(token, ids, from_ts, to_ts)
+    except Exception as e:
+        return JSONResponse(
+            status_code=502,
+            content={"error": "upstream_current_fetch_failed", "detail": str(e)}
+        )
 
     with SessionLocal() as s:
         for row in data:
@@ -160,17 +174,17 @@ def ingest_current_mean_30m(hours: int = 2, limit: int = 3):
             ))
         s.commit()
 
-    n = normalize_current_mean_30min(data)
+    n = normalize_current_mean_10min(data)
     return {"instrument_ids": ids, "fetched": len(data), "normalized": n}
 
 @app.get("/metrics/ingest-summary", summary="Rows ingested in last N hours")
 def ingest_summary(hours: int = 24):
     q = text("""
       with rng as (select now() - (:h||' hours')::interval as since)
-      select 'voltage_mean_30m' as table, count(*) as rows
-        from voltage_mean_30m, rng where ts_utc >= rng.since
+      select 'voltage_mean_10m' as table, count(*) as rows
+        from voltage_mean_10m, rng where ts_utc >= rng.since
       union all
-      select 'current_mean_30m', count(*) from current_mean_30m, rng
+      select 'current_mean_10m', count(*) from current_mean_10m, rng
         where ts_utc >= rng.since
     """)
     with SessionLocal() as s:
@@ -189,7 +203,16 @@ def cloud_init_route():
     return {"ok": True}
 
 @app.post("/cloud/sync", summary="Replicate recent rows to cloud target")
-def cloud_sync_route(tables: str = "instrument,voltage_mean_30m,current_mean_30m", since_hours: int = 24):
+def cloud_sync_route(tables: str = "instrument,voltage_mean_10m,current_mean_10m", since_hours: int = 24):
     tlist = [t.strip() for t in tables.split(",") if t.strip()]
     res = cloud_sync(tlist, since_hours=since_hours)
     return {"tables": tlist, "since_hours": since_hours, "copied_rows": res}
+
+@app.post("/ingest/voltage-mean-30m")
+def ingest_voltage_mean_30m_alias(hours: int = 2, limit: int = 3):
+    # delegate to the 10m handler
+    return ingest_voltage_mean_10m(hours=hours, limit=limit)
+
+@app.post("/ingest/current-mean-30m")
+def ingest_current_mean_30m_alias(hours: int = 2, limit: int = 3):
+    return ingest_current_mean_10m(hours=hours, limit=limit)

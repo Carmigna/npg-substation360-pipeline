@@ -73,49 +73,44 @@ def list_instruments(token: str):
                     return data[k]
         return data
 
-def voltage_mean_30min(token: str, instrument_ids: list[int], from_dt, to_dt):
+# src/app/clients/substation360.py
+
+def voltage_mean_10min(token: str, instrument_ids: list[int], from_dt, to_dt):
     """
+    NOTE: Vendor provides 30min endpoint; we keep our local naming 10m but call 30min upstream.
     GET /api/voltage/mean/30min?from=...&to=...
-    Body: JSON array of instrument IDs (Content-Type: application/json).
-    Uses client.request() because some httpx versions don't accept json= on .get().
+    Body: JSON array of instrument IDs (Content-Type: application/json)
     """
     url = f"{settings.S360_BASE_URL}/voltage/mean/30min"
     params = {"from": _iso_z(from_dt), "to": _iso_z(to_dt)}
     headers = _auth_headers(token) | {"Content-Type": "application/json"}
     verify = _verify_arg()
     payload = list(instrument_ids)
-
     with httpx.Client(verify=verify, timeout=60) as client:
-        # Method A: request() with json=
         try:
             r = client.request("GET", url, headers=headers, params=params, json=payload)
         except TypeError:
-            # Very old httpx: fallback to build_request + send
-            req = client.build_request(
-                "GET", url, headers=headers, params=params, content=_json.dumps(payload)
-            )
+            req = client.build_request("GET", url, headers=headers, params=params, content=_json.dumps(payload))
             r = client.send(req)
         r.raise_for_status()
         return r.json()
 
-def current_mean_30min(token: str, instrument_ids: list[int], from_dt, to_dt):
+def current_mean_10min(token: str, instrument_ids: list[int], from_dt, to_dt):
     """
+    NOTE: Vendor provides 30min endpoint; we keep our local naming 10m but call 30min upstream.
     GET /api/current/mean/30min?from=...&to=...
-    Body: JSON array of instrument IDs (Content-Type: application/json).
+    Body: JSON array of instrument IDs (Content-Type: application/json)
     """
     url = f"{settings.S360_BASE_URL}/current/mean/30min"
     params = {"from": _iso_z(from_dt), "to": _iso_z(to_dt)}
     headers = _auth_headers(token) | {"Content-Type": "application/json"}
     verify = _verify_arg()
     payload = list(instrument_ids)
-
     with httpx.Client(verify=verify, timeout=60) as client:
         try:
             r = client.request("GET", url, headers=headers, params=params, json=payload)
         except TypeError:
-            req = client.build_request(
-                "GET", url, headers=headers, params=params, content=_json.dumps(payload)
-            )
+            req = client.build_request("GET", url, headers=headers, params=params, content=_json.dumps(payload))
             r = client.send(req)
         r.raise_for_status()
         return r.json()

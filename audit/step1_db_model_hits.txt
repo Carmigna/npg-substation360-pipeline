@@ -1,0 +1,48 @@
+Makefile:22:	$(PY) -m src.app.ingest.run_ingest voltage_mean_30min --hours 2 --limit 3
+README.md:38:5. **Normalize (silver)** → extract canonical fields into `voltage_mean_30m`, `current_mean_30m`.
+README.md:231:  * `voltage_mean_30m(instrument_id, ts_utc, phase, value, unit)`
+README.md:232:  * `current_mean_30m(instrument_id, ts_utc, phase, value, unit)`
+README.md:236:  CREATE UNIQUE INDEX IF NOT EXISTS uq_voltage_mean_30m  ON voltage_mean_30m (instrument_id, ts_utc, phase);
+README.md:237:  CREATE UNIQUE INDEX IF NOT EXISTS uq_current_mean_30m  ON current_mean_30m (instrument_id, ts_utc, phase);
+README.md:288:  -c "select count(*) from voltage_mean_30m; \
+README.md:289:      select count(*) from current_mean_30m; \
+README.md:290:      select * from voltage_mean_30m order by ts_utc desc limit 5;"
+README.md:297:# {"since_hours":24,"tables":[{"table":"voltage_mean_30m","rows":...},{"table":"current_mean_30m","rows":...}]}
+README.md:314:* `POST /cloud/sync?tables=instrument,voltage_mean_30m,current_mean_30m&since_hours=24` — replicate recent rows
+README.md:322:You can replicate `instrument`, `voltage_mean_30m`, and `current_mean_30m` to a **second database** (e.g., cloud Postgres). It’s off by default.
+README.md:349:  "http://127.0.0.1:8000/cloud/sync?tables=instrument,voltage_mean_30m,current_mean_30m&since_hours=24" \
+README.md:351:# {"tables":[...],"since_hours":24,"copied_rows":{"instrument":N,"voltage_mean_30m":X,"current_mean_30m":Y}}
+README.md:359:      select count(*) from voltage_mean_30m; \
+README.md:360:      select count(*) from current_mean_30m;"
+src/app/clients/substation360.py:76:def voltage_mean_30min(token: str, instrument_ids: list[int], from_dt, to_dt):
+src/app/clients/substation360.py:101:def current_mean_30min(token: str, instrument_ids: list[int], from_dt, to_dt):
+src/app/db/models.py:24:    __tablename__ = "voltage_mean_30m"
+src/app/db/models.py:32:    __tablename__ = "current_mean_30m"
+src/app/ingest/normalize.py:156:def normalize_voltage_mean_30min(rows: Iterable[dict]) -> int:
+src/app/ingest/normalize.py:181:        logger.info(f"normalize_voltage_mean_30min: mapped={len(mapped)} skipped={skipped}")
+src/app/ingest/normalize.py:184:    INSERT INTO voltage_mean_30m (instrument_id, ts_utc, phase, value, unit)
+src/app/ingest/normalize.py:193:def normalize_current_mean_30min(rows: Iterable[dict]) -> int:
+src/app/ingest/normalize.py:218:        logger.info(f"normalize_current_mean_30min: mapped={len(mapped)} skipped={skipped}")
+src/app/ingest/normalize.py:221:    INSERT INTO current_mean_30m (instrument_id, ts_utc, phase, value, unit)
+src/app/main.py:11:    voltage_mean_30min, current_mean_30min
+src/app/main.py:16:    normalize_voltage_mean_30min, normalize_current_mean_30min
+src/app/main.py:99:def ingest_voltage_mean_30m(hours: int = 2, limit: int = 3):
+src/app/main.py:117:    data = voltage_mean_30min(token, ids, from_ts, to_ts)
+src/app/main.py:130:    n = normalize_voltage_mean_30min(data)
+src/app/main.py:134:def ingest_current_mean_30m(hours: int = 2, limit: int = 3):
+src/app/main.py:152:    data = current_mean_30min(token, ids, from_ts, to_ts)
+src/app/main.py:163:    n = normalize_current_mean_30min(data)
+src/app/main.py:170:      select 'voltage_mean_30m' as table, count(*) as rows
+src/app/main.py:171:        from voltage_mean_30m, rng where ts_utc >= rng.since
+src/app/main.py:173:      select 'current_mean_30m', count(*) from current_mean_30m, rng
+src/app/main.py:192:def cloud_sync_route(tables: str = "instrument,voltage_mean_30m,current_mean_30m", since_hours: int = 24):
+src/app/sync/cloud.py:25:            CREATE UNIQUE INDEX IF NOT EXISTS uq_voltage_mean_30m
+src/app/sync/cloud.py:26:            ON voltage_mean_30m (instrument_id, ts_utc, phase);
+src/app/sync/cloud.py:29:            CREATE UNIQUE INDEX IF NOT EXISTS uq_current_mean_30m
+src/app/sync/cloud.py:30:            ON current_mean_30m (instrument_id, ts_utc, phase);
+src/app/sync/cloud.py:47:    elif table == "voltage_mean_30m":
+src/app/sync/cloud.py:50:            from voltage_mean_30m
+src/app/sync/cloud.py:54:            INSERT INTO voltage_mean_30m (instrument_id, ts_utc, phase, value, unit)
+src/app/sync/cloud.py:59:    elif table == "current_mean_30m":
+src/app/sync/cloud.py:62:            from current_mean_30m
+src/app/sync/cloud.py:66:            INSERT INTO current_mean_30m (instrument_id, ts_utc, phase, value, unit)

@@ -1,0 +1,1 @@
+README.md:36:3. **Ingest** → e.g. `GET /api/voltage/mean/30min?from=...&to=...` with **JSON body = \[instrumentIds]**.&#x20;

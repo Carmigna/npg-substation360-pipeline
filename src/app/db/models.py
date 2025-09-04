@@ -20,16 +20,16 @@ class RawMeasurement(Base):
     ingested_at = Column(DateTime(timezone=True), server_default=func.now())
     __table_args__ = (Index("ix_raw_instr_endpoint", "instrument_id", "endpoint"),)
 
-class VoltageMean30m(Base):
-    __tablename__ = "voltage_mean_30m"
+class VoltageMean10m(Base):
+    __tablename__ = "voltage_mean_10m"
     instrument_id = Column(BigInteger, primary_key=True)
     ts_utc = Column(DateTime(timezone=True), primary_key=True)
     phase = Column(String, primary_key=True)        # 'A','B','C','TOTAL'
     value = Column(Float)
     unit = Column(String)
 
-class CurrentMean30m(Base):
-    __tablename__ = "current_mean_30m"
+class CurrentMean10m(Base):
+    __tablename__ = "current_mean_10m"
     instrument_id = Column(BigInteger, primary_key=True)
     ts_utc = Column(DateTime(timezone=True), primary_key=True)
     phase = Column(String, primary_key=True)
