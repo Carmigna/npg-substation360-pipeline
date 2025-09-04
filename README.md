@@ -1,8 +1,8 @@
 # NPG Substation360 Pipeline Demo
 
-**Goal:** Stand up a production‑shaped data pipeline that authenticates to EA Technology’s **Substation360 Integration API**, discovers **Instruments**, fetches **30‑minute telemetry** (e.g., Voltage/Current mean), lands raw payloads into Postgres (**bronze**), and normalizes into query‑ready tables (**silver**). The repo supports **VS Code (local)** and **GitHub Codespaces (zero‑install)**.
+**Goal:** Stand up a production‑shaped data pipeline that authenticates to EA Technology’s **Substation360 Integration API**, discovers **Instruments**, fetches **10-minute telemetry** (e.g., Voltage/Current mean), lands raw payloads into Postgres (**bronze**), and normalizes into query‑ready tables (**silver**). The repo supports **VS Code (local)** and **GitHub Codespaces (zero‑install)**.
 
-> **Granularity:** The Integration API exposes **30‑minute capture** for core telemetry (e.g., voltage/current mean). Endpoints are called as **HTTP GET** with `from`/`to` query parameters and a **JSON body of instrument IDs**—an unusual but documented pattern we mirror exactly.&#x20;
+> **Granularity:** The Integration API exposes **10-minute capture** for core telemetry (e.g., voltage/current mean). Endpoints are called as **HTTP GET** with `from`/`to` query parameters and a **JSON body of instrument IDs**—an unusual but documented pattern we mirror exactly.&#x20;
 
 ---
 
@@ -423,7 +423,7 @@ psql "host=localhost port=5432 dbname=s360_cloud user=app password=app" \
 
 ## Roadmap
 
-* Add more telemetry endpoints: Active/Reactive/ Apparent Power means, Voltage min/max, THD, Transformer temperature (30‑minute capture).
+* Add more telemetry endpoints: Active/Reactive/ Apparent Power means, Voltage min/max, THD, Transformer temperature (10-minute capture).
 * Idempotent **backfill** tooling + gap detection.
 * Views for ML feature extraction; export to Parquet.
 * CI/CD + scheduled jobs + observability (metrics/logs).
